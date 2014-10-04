@@ -1,5 +1,4 @@
 import argparse
-import threading
 import socketserver
 
 class HTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -77,7 +76,7 @@ def handleHTTP(sock):
         clength = int(data['headers']['Content-Length']) - len(extra)
         data['body'] = extra
         if clength > 0:
-            data['body'] += sock.recv(clength)
+            data['body'] += sock.recv(clength).decode()
         
         data['raw'].append(data['body'])
 
