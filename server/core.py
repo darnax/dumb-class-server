@@ -1,6 +1,7 @@
 import argparse
 import threading
 import socketserver
+from .dumbserver import hi
 
 class HTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     pass
