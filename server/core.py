@@ -1,97 +1,110 @@
 import argparse
 import socketserver
+import os
+import os.path
+
+# local imports
+import httputil
+import digestauth
+from responsemap import ResponseMap
+
+authrealm = 'Magical Digestion'
+usercreds = {
+    'darnax': 'stinky',
+    'magic': 'worlds'
+}
 
 class HTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
 class HTTPRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
+        response = None
         try:
-            request = handleHTTP(self.request)
-            print(request)
-        except IOError as ex:
-            print("Malformed Request: " + str(ex))
+            # Parse the request then send back a respone
+            requestData = httputil.handleHTTP(self.request)
+            response = makeFileResponse(self.server.httpRoot, requestData)
+        except:
+            response = makeHTTPResponse(400)
 
-# Optimized for short lines
-def recv_until(sock, until, overflow='', scratchSpace=bytearray(1024)):
-    line = overflow
-    end = line.find(until)
+        self.request.sendall(response)
 
-    while end == -1:
-        byteCount = sock.recv_into(scratchSpace)
-        if byteCount == 0:
-            raise IOError("Socket closed")
-        line += scratchSpace[0:byteCount].decode()
-        end = line.find(until)
-    end += len(until)
+def makeFileResponse(root, request):
+    # Determine the path of the file we are looking for
+    filePath = safeJoin(root, request['resource'])
 
-    return line[0:end], line[end:]
+    # Make sure the file exists (give back a 404 if it does not)
+    if os.path.isfile(filePath):
+        # Perform an auth step if it is in the protected sub-directory
+        if filePath.startswith(root + '/protected/') and \
+        ('Authorization' not in request['headers'] or \
+        not digestauth.testDigestAuthResponse(authrealm, request['headers']['Authorization'], usercreds)):
+            return makeHTTPResponse(401, headers={'WWW-Authenticate': digestauth.makeDigestAuthChallenge(authrealm)})
 
-def handleHTTP(sock):
-    # Initialize read buffer
-    buff = bytearray(1024)
+        # Open and read the file to send back a response
+        with open(filePath, 'r') as f:
+            return makeHTTPResponse(200, payload=f.read())
+    return makeHTTPResponse(404)
 
-    # Initialize parse structure
-    data = {}
-    data['headers'] = {}
-    data['raw'] = [] # Join at the end to prevent wasting time on new allocations
+def makeHTTPResponse(code, headers={}, payload=''):
+    # Make sure we actually know the name for this code
+    if code not in ResponseMap:
+        raise LookupError(code + ' not found in supported response codes')
 
-    # Receive and parse the initial line
-    extra = ''
-    line, extra = recv_until(sock, '\r\n', extra, buff)
-    data['raw'].append(line)
+    # Insert required parts of response
+    response = []
+    response += 'HTTP/1.0 ' + str(code) + ' ' + ResponseMap[code] + '\r\n'
+    response += 'Content-Length: ' + str(len(payload)) + '\r\n'
 
-    # Break down the line into parts
-    parts = line.split(' ', 2)
-    if len(parts) != 3:
-        raise IOError("Malformed HTTP data")
-    parts[2] = parts[2][:-2] # Remove the trailing \r\n
+    # Insert any extrea headers given
+    for key in headers:
+        response += key + ': ' + headers[key] + '\r\n'
 
-    # Determine if this is a request or a response
-    if len(parts[0]) > 4 and parts[0][0:4] == 'HTTP':
-        data['type'] = 'response'
-        data['version'] = parts[0]
-        try:
-            data['code'] = int(parts[1])
-        except ValueError:
-            raise IOError("Malformed HTTP response code")
-        data['codestr'] = parts[2]
-    else:
-        data['type'] = 'request'
-        data['verb'] = parts[0]
-        data['resource'] = parts[1]
-        data['version'] = parts[2]
+    # End the response with a blank line and the payload
+    response += '\r\n'
+    response += payload
+    return ''.join(response).encode('ascii')
 
-    while line != '\r\n':
-        line, extra = recv_until(sock, '\r\n', extra, buff)
-        data['raw'].append(line)
-        
-        # Try to parse the header if possible
-        parts = line.split(': ', 1)
-        if len(parts) == 2:
-            data['headers'][parts[0]] = parts[1][:-2]    
+def safeJoin(base, resource):
+    # Needed a function to prevent path joins from using /../ or anything similar to access illegal locations
+    # (I once had to help a community recover from the effects of a hack caused by this very issue -Chris)
+    # Referenced http://stackoverflow.com/questions/1950069/suspicious-operation-django for this function
+    # Security is very important and should always be crowdsourced when possible
+    base = os.path.normcase(os.path.abspath(base))
+    result = os.path.normcase(os.path.abspath(base + resource))
+    baselen = len(base)
+    if not result.startswith(base) or result[baselen:baselen+1] not in ('', os.sep):
+        raise ValueError('The joined path is outside of the base path')
 
-    # Check if a body should be present
-    if 'Content-Length' in data['headers']:
-        clength = int(data['headers']['Content-Length']) - len(extra)
-        data['body'] = extra
-        if clength > 0:
-            data['body'] += sock.recv(clength).decode()
-        
-        data['raw'].append(data['body'])
-
-    # Merge the response fields
-    data['raw'] = ''.join(data['raw'])
-    return data
+    return result
 
 def parseArgs():
+    # Perform argument parsing
     parser = argparse.ArgumentParser(description='A basic server')
     parser.add_argument('root', help='The root directory of the server')
     parser.add_argument('port', type=int, help='The port to bind the server to')
     return parser.parse_args()
 
 def runServer(host, port, root):
+    # Make sure the given root is valid
+    if not os.path.exists(root):
+        print("Root path not found")
+        return
+    if not os.path.isdir(root):
+        print("Root path is not a directory")
+        return
+    root = os.path.normcase(os.path.abspath(root))
+
+    # Start up the server
     server = HTTPServer((host, port), HTTPRequestHandler)
+    server.httpRoot = root
+
+    # Print out some basic debug information
+    print("Host: " + host)
+    print("Port: " + str(port))
+    print("Base directory: " + root)
+
+    # Enter an endless multi-threaded loop
     server.serve_forever()
 
 if __name__ == "__main__":
