@@ -47,7 +47,6 @@ def testDigestAuthResponse(realm, digest, usercreds, verb='GET'):
                 return False
             digestDict[parts[0]] = parts[1][1:-1]
 
-        print(digestDict)
         # Make sure the fields we are going to look at are in the digest
         if  'opaque'    not in digestDict or \
             'realm'     not in digestDict or \
@@ -60,14 +59,15 @@ def testDigestAuthResponse(realm, digest, usercreds, verb='GET'):
         # Make sure the realm is right before going any further
         if digestDict['realm'] != realm:
             return False
-
+        
         # Make sure the username is in our 'database'
         if digestDict['username'] not in usercreds:
             return False
-
+        
         # Calculate a response from the given fields and compare it to the given response
         nonce = hashlib.md5(digestDict['opaque'].encode()).hexdigest()
         correctResponse = makeMD5DigestResponse(digestDict['username'], usercreds[digestDict['username']], realm, verb, digestDict['uri'], nonce)
+        print(correctResponse)
         if digestDict['response'] == correctResponse:
             return True
         return False

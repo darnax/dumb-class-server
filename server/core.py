@@ -23,10 +23,14 @@ class HTTPRequestHandler(socketserver.BaseRequestHandler):
         try:
             # Parse the request then send back a respone
             requestData = httputil.handleHTTP(self.request)
+            print("Request Received:")
+            print(requestData['raw'])
             response = makeFileResponse(self.server.httpRoot, requestData)
         except:
             response = makeHTTPResponse(400)
 
+        print("Sending Response:")
+        print(response.decode())
         self.request.sendall(response)
 
 def makeFileResponse(root, request):
